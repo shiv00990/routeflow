@@ -12,7 +12,7 @@ export default function AgentDashboard() {
   // Group Companions State
   const [groupMembers, setGroupMembers] = useState([]);
 
-  // Multi-Day Initial State with ticket vault & route type fields
+  // Multi-Day Initial State
   const [tripDays, setTripDays] = useState([
     {
       dayTitle: "Day 1: Arrival & Exploration",
@@ -40,7 +40,6 @@ export default function AgentDashboard() {
   const [editingTripId, setEditingTripId] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // 1. Fetch Itineraries & Subscribe to Real-Time Telemetry Updates
   useEffect(() => { 
     fetchItineraries();
 
@@ -71,9 +70,8 @@ export default function AgentDashboard() {
     if (data) setItineraries(data);
   }
 
-  // Delete Trip from Supabase & UI
   const deleteItinerary = async (tripId, client) => {
-    const confirmed = window.confirm(`Are you sure you want to permanently delete the itinerary for "${client}"? This will deactivate the live portal.`);
+    const confirmed = window.confirm(`Are you sure you want to permanently delete the itinerary for "${client}"?`);
     if (!confirmed) return;
 
     const { error } = await supabase.from('itineraries').delete().eq('id', tripId);
@@ -204,7 +202,6 @@ export default function AgentDashboard() {
     setTripDays(updatedDays);
   };
 
-  // Group Companions Handlers
   const addGroupMember = () => {
     setGroupMembers([...groupMembers, { id: Date.now().toString(), name: '', phone: '' }]);
   };
@@ -219,7 +216,6 @@ export default function AgentDashboard() {
     setGroupMembers(copy);
   };
 
-  // Intelligent Place Description Generator (Wikipedia Real Knowledge API + Dynamic Smart Fallback)
   const generateCatchyDescription = async (title, dIdx, aIdx) => {
     if (!title || title.trim().length === 0) {
       return alert('Enter a place name first!');
@@ -229,7 +225,6 @@ export default function AgentDashboard() {
     updateActivityField(dIdx, aIdx, 'description', '✨ Generating detailed place intelligence...');
 
     try {
-      // 1. Direct Wikipedia API Summary
       const wikiRes = await fetch(
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`
       );
@@ -243,7 +238,6 @@ export default function AgentDashboard() {
         }
       }
 
-      // 2. Search fallback
       const searchRes = await fetch(
         `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleanTitle)}&format=json&origin=*`
       );
@@ -261,7 +255,6 @@ export default function AgentDashboard() {
       console.warn('Live encyclopedia fetch fallback:', e);
     }
 
-    // 3. Category-Aware Dynamic Fallback
     const lower = cleanTitle.toLowerCase();
     let richFallback = '';
 
@@ -305,14 +298,13 @@ export default function AgentDashboard() {
     const cleanNumber = phone.replace(/\D/g, '');
     const roleParam = isLead ? 'lead' : 'member';
     const liveUrl = `${window.location.origin}/?id=${id}&role=${roleParam}`;
-    const roleText = isLead ? "Trip Leader Portal (Full Navigation & Visit Controls)" : "Companion Portal (Live Route Tracking & AI Voice Guide)";
+    const roleText = isLead ? "Trip Leader Portal" : "Companion Portal";
     const message = encodeURIComponent(
       `Hello ${name}! ✨ Here is your access link to the ${dest} trip (${roleText}): ${liveUrl}`
     );
     window.open(`https://wa.me/${cleanNumber}?text=${message}`, '_blank');
   };
 
-  // Helper to Calculate Live Telemetry Metrics
   const calculateTelemetry = (trip) => {
     let totalStops = 0;
     let completedStops = 0;
@@ -373,91 +365,138 @@ export default function AgentDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F4F0] p-6 font-sans">
-      <div className="max-w-4xl mx-auto space-y-8">
+    <div className="min-h-screen bg-[#F4F4F0] p-3 sm:p-6 font-sans overflow-x-hidden">
+      <div className="max-w-4xl mx-auto space-y-6">
         
-        {/* HEADER BLOCK WITH PROJECT LOGO */}
-        <div className="flex justify-between items-start">
+        {/* RESPONSIVE HEADER */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm">
           <div className="flex items-center gap-3">
             <img 
               src="/logo.png" 
               alt="RouteFlow Logo" 
-              className="w-10 h-10 object-contain rounded-xl shadow-xs"
+              className="w-9 h-9 sm:w-10 sm:h-10 object-contain rounded-xl shrink-0"
               onError={(e) => { e.target.style.display = 'none'; }}
             />
             <div>
-              <h1 className="font-editorial text-3xl text-slate-900 tracking-tight">RouteFlow</h1>
-              <p className="text-xs text-slate-500 mt-0.5">Multi-Day Travel Planner & Live Agency Telemetry</p>
+              <h1 className="font-editorial text-2xl sm:text-3xl text-slate-900 tracking-tight leading-tight">RouteFlow</h1>
+              <p className="text-[11px] sm:text-xs text-slate-500">Multi-Day Travel Planner & Agency Command</p>
             </div>
           </div>
           {isEditing && (
-            <button type="button" onClick={cancelEditing} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-xl text-xs font-semibold text-slate-700">Cancel Edit Mode</button>
+            <button 
+              type="button" 
+              onClick={cancelEditing} 
+              className="w-full sm:w-auto px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-xs font-semibold text-slate-700 transition-colors"
+            >
+              Cancel Edit Mode
+            </button>
           )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200/60 grid grid-cols-1 md:grid-cols-2 gap-4 relative z-50">
-            <input type="text" placeholder="Trip Lead Client Name" value={clientName} onChange={(e) => setClientName(e.target.value)} className="px-4 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-sm w-full" />
-            
-            <div className="relative">
+          {/* CORE TRIP INFO */}
+          <div className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-slate-200/60 grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 relative z-40">
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-slate-600 font-mono">Trip Lead Name</label>
               <input 
                 type="text" 
-                placeholder="City Destination (e.g., Madurai)" 
+                placeholder="Client Name (e.g. John Doe)" 
+                value={clientName} 
+                onChange={(e) => setClientName(e.target.value)} 
+                className="px-3.5 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-xs sm:text-sm w-full focus:outline-slate-900" 
+              />
+            </div>
+            
+            <div className="space-y-1 relative">
+              <label className="text-[11px] font-bold text-slate-600 font-mono">City / Destination</label>
+              <input 
+                type="text" 
+                placeholder="Type City (e.g. Madurai)" 
                 value={destination} 
                 onChange={(e) => setDestination(e.target.value)} 
-                className="px-4 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-sm w-full focus:outline-slate-900" 
+                className="px-3.5 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-xs sm:text-sm w-full focus:outline-slate-900" 
               />
               {destSuggestions && destSuggestions.length > 0 && (
-                <div className="absolute left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-48 overflow-y-auto z-[9999] text-xs divide-y divide-slate-100 block">
+                <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-48 overflow-y-auto z-50 text-xs divide-y divide-slate-100">
                   {destSuggestions.map((item, idx) => (
-                    <div key={idx} onClick={() => selectDestination(item)} className="p-3 hover:bg-slate-50 cursor-pointer text-slate-700 font-medium truncate">📍 {item.display_name}</div>
+                    <div key={idx} onClick={() => selectDestination(item)} className="p-3 hover:bg-slate-50 cursor-pointer text-slate-700 font-medium truncate">
+                      📍 {item.display_name}
+                    </div>
                   ))}
                 </div>
               )}
             </div>
 
-            <input type="text" placeholder="Trip Lead WhatsApp Number" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} className="px-4 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-sm w-full" />
-            <input type="date" value={departureDate} onChange={(e) => setDepartureDate(e.target.value)} className="px-4 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-sm text-slate-600 w-full" />
-            <input type="text" placeholder="Cover Image URL" value={coverImage} onChange={(e) => setCoverImage(e.target.value)} className="px-4 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-sm md:col-span-2 w-full" />
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-slate-600 font-mono">Lead WhatsApp (+91...)</label>
+              <input 
+                type="text" 
+                placeholder="+91 9876543210" 
+                value={whatsapp} 
+                onChange={(e) => setWhatsapp(e.target.value)} 
+                className="px-3.5 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-xs sm:text-sm w-full focus:outline-slate-900" 
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-slate-600 font-mono">Departure Date</label>
+              <input 
+                type="date" 
+                value={departureDate} 
+                onChange={(e) => setDepartureDate(e.target.value)} 
+                className="px-3.5 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-xs sm:text-sm text-slate-600 w-full focus:outline-slate-900" 
+              />
+            </div>
+
+            <div className="space-y-1 sm:col-span-2">
+              <label className="text-[11px] font-bold text-slate-600 font-mono">Cover Image URL (Optional)</label>
+              <input 
+                type="text" 
+                placeholder="https://images.unsplash.com/..." 
+                value={coverImage} 
+                onChange={(e) => setCoverImage(e.target.value)} 
+                className="px-3.5 py-2.5 bg-[#FAF9F6] border border-slate-200 rounded-xl text-xs sm:text-sm w-full focus:outline-slate-900" 
+              />
+            </div>
           </div>
 
-          {/* GROUP COMPANIONS SECTION */}
-          <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200/60 space-y-4">
-            <div className="flex justify-between items-center border-b border-dashed border-slate-200 pb-3">
+          {/* GROUP COMPANIONS ROSTER */}
+          <div className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-slate-200/60 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-dashed border-slate-200 pb-3">
               <div>
                 <h3 className="font-semibold text-slate-900 text-sm">👥 Group Companions Roster</h3>
-                <p className="text-[11px] text-slate-500">Companions receive synced live views & audio guides without edit controls.</p>
+                <p className="text-[11px] text-slate-500">Add group members to receive synchronized live views.</p>
               </div>
               <button 
                 type="button" 
                 onClick={addGroupMember}
-                className="text-xs font-bold px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors font-mono"
+                className="self-start sm:self-auto text-xs font-bold px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors font-mono"
               >
                 + Add Member
               </button>
             </div>
 
             {groupMembers.length === 0 ? (
-              <p className="text-xs text-slate-400 italic py-2">No companions added yet. Solo trip lead mode active.</p>
+              <p className="text-xs text-slate-400 italic py-2">No companions added. Solo lead mode active.</p>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {groupMembers.map((member, mIdx) => (
-                  <div key={member.id || mIdx} className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center bg-[#FAF9F6] p-3 rounded-xl border border-slate-200">
+                  <div key={member.id || mIdx} className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center bg-[#FAF9F6] p-3 rounded-xl border border-slate-200">
                     <input 
                       type="text" 
                       placeholder="Companion Name" 
                       value={member.name} 
                       onChange={(e) => updateGroupMember(mIdx, 'name', e.target.value)}
-                      className="p-2 border rounded-lg text-xs bg-white text-slate-700" 
+                      className="p-2 border rounded-lg text-xs bg-white text-slate-700 w-full" 
                     />
                     <input 
                       type="text" 
                       placeholder="Companion WhatsApp (+91...)" 
                       value={member.phone} 
                       onChange={(e) => updateGroupMember(mIdx, 'phone', e.target.value)}
-                      className="p-2 border rounded-lg text-xs bg-white text-slate-700" 
+                      className="p-2 border rounded-lg text-xs bg-white text-slate-700 w-full" 
                     />
-                    <div className="flex items-center justify-end">
+                    <div className="flex justify-end">
                       <button 
                         type="button" 
                         onClick={() => removeGroupMember(mIdx)}
@@ -472,10 +511,10 @@ export default function AgentDashboard() {
             )}
           </div>
 
-          {/* DYNAMIC MULTI-DAY LIST WITH TRAVEL VAULT INPUTS */}
+          {/* DYNAMIC MULTI-DAY TIMELINE */}
           {tripDays.map((day, dIdx) => (
-            <div key={dIdx} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200/60 space-y-4 relative">
-              <div className="flex justify-between items-center border-b border-dashed border-slate-300 pb-2">
+            <div key={dIdx} className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-slate-200/60 space-y-4">
+              <div className="flex items-center justify-between gap-2 border-b border-dashed border-slate-300 pb-2">
                 <input 
                   type="text" 
                   value={day.dayTitle} 
@@ -484,105 +523,138 @@ export default function AgentDashboard() {
                     copy[dIdx].dayTitle = e.target.value; 
                     setTripDays(copy);
                   }} 
-                  className="font-editorial text-xl text-slate-800 focus:outline-none w-full bg-transparent font-bold" 
+                  className="font-editorial text-lg sm:text-xl text-slate-800 focus:outline-none w-full bg-transparent font-bold" 
                 />
                 {tripDays.length > 1 && (
                   <button 
                     type="button" 
                     onClick={() => removeDay(dIdx)}
-                    className="text-xs text-rose-600 hover:text-rose-700 font-medium px-2 py-1 rounded bg-rose-50"
+                    className="text-[11px] sm:text-xs text-rose-600 hover:text-rose-700 font-medium px-2 py-1 rounded bg-rose-50 shrink-0"
                   >
-                    🗑️ Remove Day
+                    🗑️ Delete Day
                   </button>
                 )}
               </div>
               
-              <div className="space-y-4">
+              <div className="space-y-3.5">
                 {day.activities && day.activities.map((act, aIdx) => {
                   const sKey = `${dIdx}-${aIdx}`;
                   const currentSuggestions = activitySuggestions[sKey] || [];
                   
                   return (
-                    <div key={aIdx} className="p-4 bg-[#FAF9F6] rounded-xl border border-slate-200 space-y-3 relative">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                        <input type="time" value={act.time} onChange={(e) => updateActivityField(dIdx, aIdx, 'time', e.target.value)} className="p-2 border rounded-lg text-xs bg-white text-slate-700" />
+                    <div key={aIdx} className="p-3.5 sm:p-4 bg-[#FAF9F6] rounded-xl border border-slate-200 space-y-3">
+                      
+                      {/* Top Row: Time, Place & Action */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-center">
+                        <input 
+                          type="time" 
+                          value={act.time} 
+                          onChange={(e) => updateActivityField(dIdx, aIdx, 'time', e.target.value)} 
+                          className="p-2 border rounded-lg text-xs bg-white text-slate-700 w-full" 
+                        />
                         
-                        <div className="relative">
+                        <div className="relative w-full">
                           <input 
                             type="text" 
-                            placeholder="Type Place (e.g., Meenakshi Temple)" 
+                            placeholder="Type Landmark / Place" 
                             value={act.title} 
                             onChange={(e) => handlePlaceInputChange(dIdx, aIdx, e.target.value)} 
                             className="p-2 border rounded-lg text-xs bg-white w-full focus:outline-slate-900"
                           />
                           {currentSuggestions && currentSuggestions.length > 0 && (
-                            <div className="absolute left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-40 overflow-y-auto z-[9999] text-xs divide-y divide-slate-100 block">
+                            <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-40 overflow-y-auto z-50 text-xs divide-y divide-slate-100">
                               {currentSuggestions.map((item, idx) => (
-                                <div key={idx} onClick={() => selectActivityAddress(dIdx, aIdx, item)} className="p-3 hover:bg-slate-50 cursor-pointer text-slate-700 truncate font-medium">✨ {item.display_name}</div>
+                                <div key={idx} onClick={() => selectActivityAddress(dIdx, aIdx, item)} className="p-2.5 hover:bg-slate-50 cursor-pointer text-slate-700 truncate font-medium">
+                                  ✨ {item.display_name}
+                                </div>
                               ))}
                             </div>
                           )}
                         </div>
 
-                        <div className="flex items-center justify-between pl-2">
-                          <button type="button" onClick={() => generateCatchyDescription(act.title, dIdx, aIdx)} className="text-[10px] px-2.5 py-1 bg-amber-600 text-white font-medium rounded-md hover:bg-amber-700">✨ AI Catchy Text</button>
-                          <button type="button" onClick={() => removeActivity(dIdx, aIdx)} className="text-[10px] text-slate-400 hover:text-rose-600">✕ Delete Stop</button>
+                        <div className="flex items-center justify-between gap-2">
+                          <button 
+                            type="button" 
+                            onClick={() => generateCatchyDescription(act.title, dIdx, aIdx)} 
+                            className="text-[10px] px-2.5 py-1.5 bg-amber-600 text-white font-medium rounded-lg hover:bg-amber-700 transition-colors shrink-0"
+                          >
+                            ✨ AI Summary
+                          </button>
+                          <button 
+                            type="button" 
+                            onClick={() => removeActivity(dIdx, aIdx)} 
+                            className="text-[10px] text-slate-400 hover:text-rose-600"
+                          >
+                            ✕ Delete
+                          </button>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center pt-1">
+                      {/* Transport Mode & Image URL */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                         <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
-                          <span className="text-[11px] font-bold text-slate-600 shrink-0">Transport Route:</span>
+                          <span className="text-[11px] font-bold text-slate-500 shrink-0">Route:</span>
                           <select 
                             value={act.is_driving_route ?? true ? "driving" : "flight"}
                             onChange={(e) => updateActivityField(dIdx, aIdx, 'is_driving_route', e.target.value === "driving")}
                             className="text-xs bg-transparent font-medium text-slate-800 focus:outline-none w-full cursor-pointer"
                           >
-                            <option value="driving">🚗 Road Route (OSRM Driving)</option>
-                            <option value="flight">✈️ Flight / Air Route (Dashed Line)</option>
+                            <option value="driving">🚗 Road / Highway Route</option>
+                            <option value="flight">✈️ Flight Route (Dashed)</option>
                           </select>
                         </div>
 
                         <input 
                           type="text" 
-                          placeholder="Paste Specific Place Image URL" 
+                          placeholder="Place Image URL (Optional)" 
                           value={act.placeImage || ''} 
                           onChange={(e) => updateActivityField(dIdx, aIdx, 'placeImage', e.target.value)}
                           className="w-full p-2 border rounded-lg text-xs bg-white focus:outline-slate-900"
                         />
                       </div>
 
-                      {/* SMART DIGITAL VAULT INPUTS */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-amber-50/50 p-2.5 rounded-lg border border-amber-100/80">
+                      {/* Travel Pass Vault Inputs */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-amber-50/50 p-2.5 rounded-lg border border-amber-100/80">
                         <input 
                           type="text" 
-                          placeholder="🎟️ Pass Reference (e.g. VIP Pass #TK-102)" 
+                          placeholder="🎟️ Pass Reference (e.g. VIP #TK-102)" 
                           value={act.ticketName || ''} 
                           onChange={(e) => updateActivityField(dIdx, aIdx, 'ticketName', e.target.value)}
-                          className="p-2 border border-amber-200/80 rounded-lg text-xs bg-white focus:outline-slate-900"
+                          className="p-2 border border-amber-200/80 rounded-lg text-xs bg-white focus:outline-slate-900 w-full"
                         />
                         <input 
                           type="text" 
                           placeholder="📄 Pass / QR Document URL" 
                           value={act.ticketUrl || ''} 
                           onChange={(e) => updateActivityField(dIdx, aIdx, 'ticketUrl', e.target.value)}
-                          className="p-2 border border-amber-200/80 rounded-lg text-xs bg-white focus:outline-slate-900"
+                          className="p-2 border border-amber-200/80 rounded-lg text-xs bg-white focus:outline-slate-900 w-full"
                         />
                       </div>
 
                       {act.address && (
-                        <div className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100 font-mono truncate">
-                          📍 Address Locked: {act.lat?.toFixed(4)}, {act.lng?.toFixed(4)} • Mode: {act.is_driving_route ?? true ? '🚗 Road' : '✈️ Flight'}
+                        <div className="text-[10px] text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-100 font-mono truncate">
+                          📍 Locked: {act.lat?.toFixed(4)}, {act.lng?.toFixed(4)}
                         </div>
                       )}
 
-                      <textarea placeholder="Itinerary Description details..." value={act.description} onChange={(e) => updateActivityField(dIdx, aIdx, 'description', e.target.value)} className="w-full p-2.5 border rounded-lg text-xs bg-white h-16 resize-none" />
+                      <textarea 
+                        placeholder="Itinerary description details..." 
+                        value={act.description} 
+                        onChange={(e) => updateActivityField(dIdx, aIdx, 'description', e.target.value)} 
+                        className="w-full p-2.5 border rounded-lg text-xs bg-white h-16 resize-none focus:outline-slate-900" 
+                      />
                     </div>
                   );
                 })}
               </div>
 
-              <button type="button" onClick={() => addActivity(dIdx)} className="text-xs font-semibold text-amber-800 hover:text-amber-900 block">+ Add Stop Card to {day.dayTitle.split(':')[0]}</button>
+              <button 
+                type="button" 
+                onClick={() => addActivity(dIdx)} 
+                className="text-xs font-bold text-amber-800 hover:text-amber-900 block"
+              >
+                + Add Stop Card to {day.dayTitle.split(':')[0]}
+              </button>
             </div>
           ))}
 
@@ -594,17 +666,21 @@ export default function AgentDashboard() {
             + Add New Day to Itinerary
           </button>
 
-          <button type="submit" disabled={loading} className={`w-full py-3.5 text-white font-medium rounded-xl text-sm shadow-md transition-colors ${isEditing ? 'bg-amber-700 hover:bg-amber-800' : 'bg-slate-900 hover:bg-slate-800'}`}>
-            {loading ? 'Syncing Engine Matrix...' : isEditing ? 'Save Updates & Broadcast Changes' : 'Deploy Multi-Day Portal & Dispatch Link'}
+          <button 
+            type="submit" 
+            disabled={loading} 
+            className={`w-full py-3.5 text-white font-medium rounded-xl text-sm shadow-md transition-colors ${isEditing ? 'bg-amber-700 hover:bg-amber-800' : 'bg-slate-900 hover:bg-slate-800'}`}
+          >
+            {loading ? 'Deploying Engine...' : isEditing ? 'Save & Broadcast Updates' : 'Deploy Multi-Day Portal & Generate Link'}
           </button>
         </form>
 
-        {/* ACTIVE DIRECTORY & TELEMETRY WITH DELETE OPTION */}
+        {/* ACTIVE DEPLOYED DIRECTORY */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200/60 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-            <h2 className="text-sm font-semibold text-slate-700">Active Deployed Links & Live Telemetry Directory</h2>
-            <span className="flex items-center gap-1.5 text-[11px] font-mono text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <div className="px-4 sm:px-6 py-4 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-slate-700">Active Deployed Links & Telemetry</h2>
+            <span className="self-start sm:self-auto flex items-center gap-1.5 text-[10px] font-mono text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               Live Sync Stream Active
             </span>
           </div>
@@ -619,41 +695,33 @@ export default function AgentDashboard() {
                 const telemetry = calculateTelemetry(trip);
 
                 return (
-                  <div key={trip.id} className="p-5 flex flex-col gap-4 bg-white hover:bg-slate-50/50 transition-colors">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div key={trip.id} className="p-4 sm:p-5 flex flex-col gap-3.5 bg-white">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                       <div>
-                        <h3 className="font-medium text-sm text-slate-900 flex items-center gap-2">
-                          {trip.client_name} (Lead) — <span className="text-slate-500 font-normal">{trip.destination}</span>
+                        <h3 className="font-semibold text-sm text-slate-900 flex items-center gap-1.5 flex-wrap">
+                          {trip.client_name} — <span className="text-slate-500 font-normal">{trip.destination}</span>
                           {telemetry.percentage === 100 && (
                             <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-mono font-bold">🎉 Complete</span>
                           )}
                         </h3>
-                        <p className="text-[10px] text-slate-400 mt-0.5 font-mono">
-                          UUID: {trip.id} • {trip.trip_data?.length || 1} Days Planned • {trip.group_members?.length || 0} Companions
+                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                          {trip.trip_data?.length || 1} Days Planned • {trip.group_members?.length || 0} Companions
                         </p>
                       </div>
 
+                      {/* RESPONSIVE BUTTON ROW */}
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <button onClick={() => startEditing(trip)} className="px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-medium rounded-lg hover:bg-amber-100">✏️ Edit</button>
-                        <button onClick={() => window.open(`/?id=${trip.id}&role=lead`, '_blank')} className="px-2.5 py-1.5 bg-slate-100 text-slate-800 text-xs font-medium rounded-lg hover:bg-slate-200">👑 Lead</button>
-                        <button onClick={() => window.open(`/?id=${trip.id}&role=member`, '_blank')} className="px-2.5 py-1.5 bg-slate-100 text-slate-800 text-xs font-medium rounded-lg hover:bg-slate-200">👥 Member</button>
-                        <button 
-                          onClick={() => deleteItinerary(trip.id, trip.client_name)} 
-                          className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-medium rounded-lg transition-colors"
-                          title="Permanently Delete Itinerary"
-                        >
-                          🗑️ Delete
-                        </button>
+                        <button onClick={() => startEditing(trip)} className="px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-medium rounded-lg">✏️ Edit</button>
+                        <button onClick={() => window.open(`/?id=${trip.id}&role=lead`, '_blank')} className="px-2.5 py-1.5 bg-slate-100 text-slate-800 text-xs font-medium rounded-lg">👑 Lead</button>
+                        <button onClick={() => window.open(`/?id=${trip.id}&role=member`, '_blank')} className="px-2.5 py-1.5 bg-slate-100 text-slate-800 text-xs font-medium rounded-lg">👥 Member</button>
+                        <button onClick={() => deleteItinerary(trip.id, trip.client_name)} className="px-2.5 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 text-xs font-medium rounded-lg">🗑️</button>
                       </div>
                     </div>
 
                     {/* TELEMETRY BAR */}
-                    <div className="bg-[#FAF9F6] p-3.5 rounded-xl border border-slate-200/80 space-y-2">
+                    <div className="bg-[#FAF9F6] p-3 rounded-xl border border-slate-200/80 space-y-1.5">
                       <div className="flex justify-between items-center text-xs font-mono">
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-700 font-bold">Live Progress:</span>
-                          <span className="text-blue-600 font-bold">{telemetry.completedStops}/{telemetry.totalStops} Stops Visited</span>
-                        </div>
+                        <span className="text-slate-700 font-bold">Live Progress: <span className="text-blue-600">{telemetry.completedStops}/{telemetry.totalStops}</span></span>
                         <span className="text-slate-500 font-bold">{telemetry.percentage}%</span>
                       </div>
 
@@ -664,28 +732,24 @@ export default function AgentDashboard() {
                         />
                       </div>
 
-                      <div className="pt-1 flex justify-between items-center text-[11px] font-mono text-slate-600">
+                      <div className="text-[10px] font-mono text-slate-600 truncate pt-0.5">
                         {telemetry.currentActiveStop ? (
-                          <div className="flex items-center gap-1.5 truncate">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
-                            <span className="text-slate-400">Current Target:</span>
-                            <span className="text-slate-800 font-bold truncate">{telemetry.currentActiveStop.title} ({telemetry.currentActiveStop.time})</span>
-                          </div>
+                          <span>📍 Target: <b>{telemetry.currentActiveStop.title}</b> ({telemetry.currentActiveStop.time})</span>
                         ) : (
-                          <span className="text-emerald-700 font-semibold">🏁 All stops checked out by traveler</span>
+                          <span className="text-emerald-700 font-semibold">🏁 All stops visited</span>
                         )}
                       </div>
                     </div>
 
-                    {/* COMPANION DISPATCH */}
+                    {/* COMPANIONS DISPATCH */}
                     {trip.group_members && trip.group_members.length > 0 && (
-                      <div className="pt-1 flex flex-wrap gap-2 items-center">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">Send WhatsApp:</span>
+                      <div className="flex flex-wrap gap-1.5 items-center pt-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">WhatsApp:</span>
                         {trip.group_members.map((member, mIdx) => (
                           <button
                             key={mIdx}
                             onClick={() => triggerDispatchLink(trip.id, member.phone, member.name, trip.destination, false)}
-                            className="text-[11px] bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-md font-mono transition-colors"
+                            className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-md font-mono"
                           >
                             📲 {member.name || `Member ${mIdx + 1}`}
                           </button>
