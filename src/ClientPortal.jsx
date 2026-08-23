@@ -19,12 +19,9 @@ export default function ClientPortal({ tripId }) {
   const [speaking, setSpeaking] = useState(false);
   const [audioPlayer, setAudioPlayer] = useState(null);
   
-  // Offline Cache Status
-  const [cacheStatus, setCacheStatus] = useState({ isCaching: false, progress: 0, completed: false });
-
   // Modals & Drawers State
   const [showSideDrawer, setShowSideDrawer] = useState(false);
-  const [activeDrawerTab, setActiveDrawerTab] = useState('expenses'); // 'expenses' | 'vault' | 'roster' | 'offline'
+  const [activeDrawerTab, setActiveDrawerTab] = useState('expenses');
   const [showSosModal, setShowSosModal] = useState(false);
   const [activeTicketModal, setActiveTicketModal] = useState(null);
 
@@ -34,6 +31,7 @@ export default function ClientPortal({ tripId }) {
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCurrency, setExpenseCurrency] = useState('INR');
   const [forexRates, setForexRates] = useState({ INR: 1, USD: 0.012, EUR: 0.011, THB: 0.42, AED: 0.044, JPY: 1.85, SGD: 0.016 });
+  const [cacheStatus, setCacheStatus] = useState({ isCaching: false, progress: 0, completed: false });
 
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
@@ -43,7 +41,7 @@ export default function ClientPortal({ tripId }) {
 
   const localFallbackImage = "https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=800&q=80";
 
-  // Monitor Network Connectivity Online/Offline
+  // 1. Online / Offline Listener
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -55,10 +53,9 @@ export default function ClientPortal({ tripId }) {
     };
   }, []);
 
-  // 1. Fetch Trip Data with LocalStorage Offline Backup & Real-Time Sync
+  // 2. Fetch Trip Data with Realtime Sync
   useEffect(() => {
     async function fetchTrip() {
-      // Check local cache first for instant load
       const localCachedTrip = localStorage.getItem(`routeflow_trip_${tripId}`);
       if (localCachedTrip) {
         try {
@@ -110,17 +107,13 @@ export default function ClientPortal({ tripId }) {
     };
   }, [tripId]);
 
-  // 2. Initialize Map Container
-  // 2. Initialize Map Container with automatic container resize recalculation
+  // 3. Initialize Map
   useEffect(() => {
     if (loading || !itinerary || !mapRef.current) return;
-
-    let isMounted = true;
 
     const initMap = async () => {
       let startLat = 9.9252, startLng = 78.1198, zoomLevel = 13;
 
-      // If active target coordinates exist, prioritize centering on them
       if (activeTarget && activeTarget.lat && activeTarget.lng) {
         startLat = activeTarget.lat;
         startLng = activeTarget.lng;
@@ -135,7 +128,6 @@ export default function ClientPortal({ tripId }) {
           attributionControl: false 
         }).setView([startLat, startLng], zoomLevel);
 
-        // Standard, fast OpenStreetMap tile provider
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19,
           subdomains: ['a', 'b', 'c']
@@ -143,28 +135,19 @@ export default function ClientPortal({ tripId }) {
 
         mapInstance.current = map;
 
-        // Force Leaflet to re-calculate container dimensions after rendering
         setTimeout(() => {
-          if (mapInstance.current) {
-            mapInstance.current.invalidateSize();
-          }
+          if (mapInstance.current) mapInstance.current.invalidateSize();
         }, 300);
-
         setTimeout(() => {
-          if (mapInstance.current) {
-            mapInstance.current.invalidateSize();
-          }
+          if (mapInstance.current) mapInstance.current.invalidateSize();
         }, 800);
       }
     };
 
     initMap();
+  }, [loading, itinerary]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [loading, itinerary, activeTarget]);
-  // 3. Next Target Evaluation
+  // 4. Scan for Next Target
   useEffect(() => {
     if (!itinerary) return;
 
@@ -181,7 +164,7 @@ export default function ClientPortal({ tripId }) {
     setActiveTarget(nextTarget);
   }, [itinerary, visitedActivities]);
 
-  // 4. Live GPS Tracking
+  // 5. Watch Live GPS Position
   useEffect(() => {
     if (!navigator.geolocation) return;
 
@@ -212,7 +195,7 @@ export default function ClientPortal({ tripId }) {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // 5. Dynamic Map Route Lines
+  // 6. Draw High-Speed Highway Route (OSRM Multi-Route Selection)
   useEffect(() => {
     if (!mapInstance.current || !activeTarget) return;
 
@@ -269,13 +252,17 @@ export default function ClientPortal({ tripId }) {
 
         mapInstance.current.fitBounds([userCoords, targetCoords], { padding: [50, 50] });
       } else {
-        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${userCoords[1]},${userCoords[0]};${targetCoords[1]},${targetCoords[0]}?overview=full&geometries=geojson`;
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${userCoords[1]},${userCoords[0]};${targetCoords[1]},${targetCoords[0]}?overview=full&geometries=geojson&alternatives=true&steps=true`;
 
         fetch(osrmUrl)
           .then((res) => res.json())
           .then((data) => {
             if (data.routes && data.routes.length > 0) {
-              const coordinates = data.routes[0].geometry.coordinates.map((coord) => [coord[1], coord[0]]);
+              const designatedHighwayRoute = data.routes.reduce((prev, curr) => 
+                (curr.duration < prev.duration ? curr : prev), data.routes[0]
+              );
+
+              const coordinates = designatedHighwayRoute.geometry.coordinates.map((coord) => [coord[1], coord[0]]);
               
               if (activeRouteLayerRef.current) {
                 mapInstance.current.removeLayer(activeRouteLayerRef.current);
@@ -284,8 +271,9 @@ export default function ClientPortal({ tripId }) {
               activeRouteLayerRef.current = L.polyline(coordinates, {
                 color: '#1d4ed8',
                 weight: 5,
-                opacity: 0.9,
-                lineJoin: 'round'
+                opacity: 0.95,
+                lineJoin: 'round',
+                lineCap: 'round'
               }).addTo(mapInstance.current);
 
               mapInstance.current.fitBounds(activeRouteLayerRef.current.getBounds(), { padding: [40, 40] });
@@ -302,7 +290,7 @@ export default function ClientPortal({ tripId }) {
     }
   }, [activeTarget, userCoords, itinerary]);
 
-  // Voice Assistant Handler with Local Cache Priority
+  // 7. Voice Guide Handler
   const triggerVoiceGuide = async (text) => {
     if (speaking) {
       if (audioPlayer) audioPlayer.pause();
@@ -317,7 +305,6 @@ export default function ClientPortal({ tripId }) {
     const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; 
     const ELEVENLABS_API_KEY = 'sk_2bf8e5aacecd132be94f7fdc84c7e8c60f2e1c9461598e1d';
 
-    // 1. Check local audio blob cache
     const cacheKey = `routeflow_voice_${btoa(unescape(encodeURIComponent(text.slice(0, 32))))}`;
     const localAudioData = localStorage.getItem(cacheKey);
 
@@ -330,7 +317,6 @@ export default function ClientPortal({ tripId }) {
       return;
     }
 
-    // 2. Fetch from ElevenLabs if online
     if (navigator.onLine) {
       try {
         const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
@@ -367,11 +353,10 @@ export default function ClientPortal({ tripId }) {
           return;
         }
       } catch (err) {
-        console.warn("Falling back to native browser speech synthesis...", err);
+        console.warn("Falling back to speech synthesis...", err);
       }
     }
 
-    // 3. Fallback to native Web Speech API
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
     const bestVoice = voices.find(v => 
@@ -389,16 +374,15 @@ export default function ClientPortal({ tripId }) {
     window.speechSynthesis.speak(utterance);
   };
 
-  // Pre-Cache Entire Trip for Offline Zero-Network Use
+  // 8. Offline Pre-Cache
   const preloadTripOffline = async () => {
     if (!itinerary) return;
     setCacheStatus({ isCaching: true, progress: 10, completed: false });
 
     try {
       localStorage.setItem(`routeflow_trip_${tripId}`, JSON.stringify(itinerary));
-      setCacheStatus({ isCaching: true, progress: 40, completed: false });
+      setCacheStatus({ isCaching: true, progress: 50, completed: false });
 
-      // Pre-warm map bounds
       if (mapInstance.current && itinerary.trip_data) {
         const coords = [];
         itinerary.trip_data.forEach(d => {
@@ -412,19 +396,19 @@ export default function ClientPortal({ tripId }) {
         }
       }
 
-      setCacheStatus({ isCaching: true, progress: 80, completed: false });
+      setCacheStatus({ isCaching: true, progress: 90, completed: false });
 
       setTimeout(() => {
         setCacheStatus({ isCaching: false, progress: 100, completed: true });
-      }, 1000);
+      }, 800);
 
     } catch (e) {
-      console.error(e);
       setCacheStatus({ isCaching: false, progress: 0, completed: false });
-      alert("Error caching offline trip data.");
+      alert("Error caching trip.");
     }
   };
 
+  // 9. Lead Marks Visit Over
   const handleVisitOver = async (key) => {
     if (!isTripLead) return;
 
@@ -444,7 +428,7 @@ export default function ClientPortal({ tripId }) {
     }
   };
 
-  // Group Expense Handlers
+  // 10. Expenses Logging
   const handleAddExpense = async (e) => {
     e.preventDefault();
     if (!isTripLead || !expenseTitle || !expenseAmount) return;
@@ -604,11 +588,19 @@ export default function ClientPortal({ tripId }) {
       {/* 2. Main Scrollable Container */}
       <div className="flex-1 overflow-y-auto scroll-smooth px-5 pt-5 pb-24 space-y-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         
-        {/* Title Block */}
-        <div>
-          <span className="text-[10px] font-bold uppercase tracking-widest text-amber-700 font-mono">Bespoke Portal</span>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 leading-tight">{itinerary.destination.toUpperCase()}</h1>
-          <p className="text-xs text-slate-500">Curated for <span className="font-semibold text-slate-800">{itinerary.client_name}</span></p>
+        {/* Title Block with Integrated Logo */}
+        <div className="flex items-center gap-3">
+          <img 
+            src="/logo.png" 
+            alt="Logo" 
+            className="w-9 h-9 object-contain rounded-xl shadow-xs"
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+          <div>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-amber-700 font-mono">Bespoke Portal</span>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 leading-tight">{itinerary.destination.toUpperCase()}</h1>
+            <p className="text-xs text-slate-500">Curated for <span className="font-semibold text-slate-800">{itinerary.client_name}</span></p>
+          </div>
         </div>
 
         {/* Map Card */}
@@ -616,7 +608,7 @@ export default function ClientPortal({ tripId }) {
           <div className="flex justify-between items-center px-1">
             <div className="flex flex-col">
               <span className="text-[9px] font-bold tracking-wider text-slate-400 uppercase font-mono">
-                {activeTarget?.is_driving_route ?? true ? '🚗 Road Navigation Path' : '✈️ Flight Navigation Path'}
+                {activeTarget?.is_driving_route ?? true ? '🚗 Designated Highway Corridor (NH)' : '✈️ Flight Navigation Path'}
               </span>
               {activeTarget ? (
                 <span className="text-[11px] text-blue-600 font-semibold font-mono truncate max-w-[200px]">📍 {activeTarget.title}</span>
@@ -628,11 +620,11 @@ export default function ClientPortal({ tripId }) {
           </div>
           
           <div className="w-full h-52 rounded-xl overflow-hidden relative z-0 border border-slate-100 bg-slate-100">
-            <div ref={mapRef} className="w-full h-full" style={{ height: '100%', width: '100%' }} />
+            <div ref={mapRef} style={{ height: '100%', width: '100%', minHeight: '208px' }} />
           </div>
         </div>
 
-        {/* MULTI-DAY STOP CARDS */}
+        {/* Multi-Day Stop Cards */}
         {itinerary.trip_data?.map((day, dayIndex) => (
           <div key={dayIndex} className="pt-2">
             <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider sticky top-0 bg-[#FAFAFA]/90 backdrop-blur-md py-2 z-10 font-mono border-b border-slate-200/60 mb-3">
@@ -684,7 +676,7 @@ export default function ClientPortal({ tripId }) {
                       <h3 className="font-semibold text-slate-900 text-sm mb-1">{act.title}</h3>
                       <p className="text-xs text-slate-500 leading-relaxed mb-3">{act.description}</p>
 
-                      {/* Lead Action: 'Visit Over' */}
+                      {/* Lead Action */}
                       {isCurrentActiveTarget && !isVisited && isTripLead && (
                         <button
                           onClick={() => handleVisitOver(key)}
@@ -720,7 +712,7 @@ export default function ClientPortal({ tripId }) {
         </a>
       </div>
 
-      {/* 4. SLIDE-OUT SIDE DRAWER (3-DASHES MENU) */}
+      {/* 4. Slide-Out Side Drawer */}
       {showSideDrawer && (
         <div className="fixed inset-0 z-50 flex">
           <div 
@@ -730,7 +722,6 @@ export default function ClientPortal({ tripId }) {
 
           <div className="w-[85%] max-w-sm bg-white h-full shadow-2xl flex flex-col z-10 animate-slideLeft">
             
-            {/* Drawer Header */}
             <div className="p-5 bg-slate-900 text-white flex justify-between items-center">
               <div>
                 <h3 className="font-bold text-sm">Trip Tools & Utilities</h3>
@@ -744,7 +735,6 @@ export default function ClientPortal({ tripId }) {
               </button>
             </div>
 
-            {/* Tab Navigation */}
             <div className="flex border-b border-slate-200 bg-slate-50 text-[11px] font-mono">
               <button 
                 onClick={() => setActiveDrawerTab('expenses')}
@@ -772,10 +762,9 @@ export default function ClientPortal({ tripId }) {
               </button>
             </div>
 
-            {/* Drawer Body Content */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               
-              {/* TAB 1: EXPENSE SPLITTER */}
+              {/* TAB 1: EXPENSES */}
               {activeDrawerTab === 'expenses' && (
                 <div className="space-y-4">
                   <div className="bg-gradient-to-br from-slate-900 to-slate-800 p-4 rounded-2xl text-white space-y-2 shadow-sm">
@@ -795,7 +784,7 @@ export default function ClientPortal({ tripId }) {
                       <span className="text-[11px] font-bold text-slate-700 font-mono block">➕ Log New Shared Expense</span>
                       <input 
                         type="text" 
-                        placeholder="Expense Item (e.g. Seafood Dinner)" 
+                        placeholder="Expense Item (e.g. Dinner)" 
                         value={expenseTitle} 
                         onChange={(e) => setExpenseTitle(e.target.value)}
                         className="w-full p-2 border rounded-xl text-xs bg-white focus:outline-slate-900"
@@ -868,7 +857,7 @@ export default function ClientPortal({ tripId }) {
                 </div>
               )}
 
-              {/* TAB 2: DIGITAL TICKET VAULT */}
+              {/* TAB 2: PASSES */}
               {activeDrawerTab === 'vault' && (
                 <div className="space-y-3">
                   <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">Attached Passes ({allVaultTickets.length})</span>
@@ -901,7 +890,7 @@ export default function ClientPortal({ tripId }) {
                 </div>
               )}
 
-              {/* TAB 3: GROUP ROSTER */}
+              {/* TAB 3: ROSTER */}
               {activeDrawerTab === 'roster' && (
                 <div className="space-y-3">
                   <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">Travel Group Members ({totalMembersCount})</span>
@@ -926,7 +915,7 @@ export default function ClientPortal({ tripId }) {
                 </div>
               )}
 
-              {/* TAB 4: OFFLINE-FIRST ENGINE */}
+              {/* TAB 4: OFFLINE */}
               {activeDrawerTab === 'offline' && (
                 <div className="space-y-4">
                   <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
@@ -952,7 +941,6 @@ export default function ClientPortal({ tripId }) {
 
             </div>
 
-            {/* Drawer Footer Actions */}
             <div className="p-4 border-t border-slate-200 bg-slate-50 space-y-2">
               <button 
                 onClick={() => {
@@ -969,7 +957,7 @@ export default function ClientPortal({ tripId }) {
         </div>
       )}
 
-      {/* 5. Digital Vault Modal (Passes & QR) */}
+      {/* 5. Ticket Modal */}
       {activeTicketModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
           <div className="w-full max-w-xs bg-white rounded-3xl p-6 shadow-2xl border border-amber-100 space-y-4 text-center relative">
@@ -1025,7 +1013,7 @@ export default function ClientPortal({ tripId }) {
         </div>
       )}
 
-      {/* 6. SOS Emergency Modal */}
+      {/* 6. SOS Modal */}
       {showSosModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
           <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-rose-100 space-y-4 text-center">

@@ -12,7 +12,7 @@ export default function AgentDashboard() {
   // Group Companions State
   const [groupMembers, setGroupMembers] = useState([]);
 
-  // Multi-Day Initial State with ticket vault fields
+  // Multi-Day Initial State with ticket vault & route type fields
   const [tripDays, setTripDays] = useState([
     {
       dayTitle: "Day 1: Arrival & Exploration",
@@ -40,6 +40,7 @@ export default function AgentDashboard() {
   const [editingTripId, setEditingTripId] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  // 1. Fetch Itineraries & Subscribe to Real-Time Telemetry Updates
   useEffect(() => { 
     fetchItineraries();
 
@@ -203,6 +204,7 @@ export default function AgentDashboard() {
     setTripDays(updatedDays);
   };
 
+  // Group Companions Handlers
   const addGroupMember = () => {
     setGroupMembers([...groupMembers, { id: Date.now().toString(), name: '', phone: '' }]);
   };
@@ -227,7 +229,7 @@ export default function AgentDashboard() {
     updateActivityField(dIdx, aIdx, 'description', '✨ Generating detailed place intelligence...');
 
     try {
-      // 1. Fetch genuine summary from Wikipedia API
+      // 1. Direct Wikipedia API Summary
       const wikiRes = await fetch(
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(cleanTitle)}`
       );
@@ -235,14 +237,13 @@ export default function AgentDashboard() {
       if (wikiRes.ok) {
         const wikiData = await wikiRes.json();
         if (wikiData.extract && wikiData.extract.length > 50) {
-          // Format with an engaging travel hook + authentic facts
           const detailedText = `${wikiData.extract} Known as a must-visit highlight of the region, offering visitors a rich blend of cultural heritage and captivating atmosphere.`;
           updateActivityField(dIdx, aIdx, 'description', detailedText);
           return;
         }
       }
 
-      // 2. Search fallback if direct match not found
+      // 2. Search fallback
       const searchRes = await fetch(
         `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleanTitle)}&format=json&origin=*`
       );
@@ -260,7 +261,7 @@ export default function AgentDashboard() {
       console.warn('Live encyclopedia fetch fallback:', e);
     }
 
-    // 3. Dynamic Category-Aware Fallback
+    // 3. Category-Aware Dynamic Fallback
     const lower = cleanTitle.toLowerCase();
     let richFallback = '';
 
@@ -311,6 +312,7 @@ export default function AgentDashboard() {
     window.open(`https://wa.me/${cleanNumber}?text=${message}`, '_blank');
   };
 
+  // Helper to Calculate Live Telemetry Metrics
   const calculateTelemetry = (trip) => {
     let totalStops = 0;
     let completedStops = 0;
@@ -374,10 +376,19 @@ export default function AgentDashboard() {
     <div className="min-h-screen bg-[#F4F4F0] p-6 font-sans">
       <div className="max-w-4xl mx-auto space-y-8">
         
+        {/* HEADER BLOCK WITH PROJECT LOGO */}
         <div className="flex justify-between items-start">
-          <div>
-            <h1 className="font-editorial text-3xl text-slate-900 tracking-tight">📍 RouteFlow Control Panel</h1>
-            <p className="text-xs text-slate-500 mt-1">Multi-Day Travel Planner & Live Agency Telemetry Command</p>
+          <div className="flex items-center gap-3">
+            <img 
+              src="/logo.png" 
+              alt="RouteFlow Logo" 
+              className="w-10 h-10 object-contain rounded-xl shadow-xs"
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+            <div>
+              <h1 className="font-editorial text-3xl text-slate-900 tracking-tight">RouteFlow</h1>
+              <p className="text-xs text-slate-500 mt-0.5">Multi-Day Travel Planner & Live Agency Telemetry</p>
+            </div>
           </div>
           {isEditing && (
             <button type="button" onClick={cancelEditing} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-xl text-xs font-semibold text-slate-700">Cancel Edit Mode</button>
@@ -622,7 +633,6 @@ export default function AgentDashboard() {
                         </p>
                       </div>
 
-                      {/* ACTIONS ROW: EDIT, LEAD VIEW, MEMBER VIEW & DELETE */}
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <button onClick={() => startEditing(trip)} className="px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-medium rounded-lg hover:bg-amber-100">✏️ Edit</button>
                         <button onClick={() => window.open(`/?id=${trip.id}&role=lead`, '_blank')} className="px-2.5 py-1.5 bg-slate-100 text-slate-800 text-xs font-medium rounded-lg hover:bg-slate-200">👑 Lead</button>
