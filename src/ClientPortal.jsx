@@ -3,8 +3,13 @@ import { supabase } from './supabaseClient';
 import L from 'leaflet';
 
 export default function ClientPortal({ tripId }) {
+  const urlParams = new URLSearchParams(window.location.search);
+  const userRole = urlParams.get('role') || 'lead';
+  const isTripLead = userRole === 'lead';
+
   const [itinerary, setItinerary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [countdown, setCountdown] = useState({ days: '00', hours: '00', mins: '00', secs: '00' });
   const [liveWeather, setLiveWeather] = useState('Loading weather...');
   
@@ -13,6 +18,22 @@ export default function ClientPortal({ tripId }) {
   const [userCoords, setUserCoords] = useState(null);
   const [speaking, setSpeaking] = useState(false);
   const [audioPlayer, setAudioPlayer] = useState(null);
+  
+  // Offline Cache Status
+  const [cacheStatus, setCacheStatus] = useState({ isCaching: false, progress: 0, completed: false });
+
+  // Modals & Drawers State
+  const [showSideDrawer, setShowSideDrawer] = useState(false);
+  const [activeDrawerTab, setActiveDrawerTab] = useState('expenses'); // 'expenses' | 'vault' | 'roster' | 'offline'
+  const [showSosModal, setShowSosModal] = useState(false);
+  const [activeTicketModal, setActiveTicketModal] = useState(null);
+
+  // Expense Splitter State
+  const [expenses, setExpenses] = useState([]);
+  const [expenseTitle, setExpenseTitle] = useState('');
+  const [expenseAmount, setExpenseAmount] = useState('');
+  const [expenseCurrency, setExpenseCurrency] = useState('INR');
+  const [forexRates, setForexRates] = useState({ INR: 1, USD: 0.012, EUR: 0.011, THB: 0.42, AED: 0.044, JPY: 1.85, SGD: 0.016 });
 
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
@@ -22,54 +43,128 @@ export default function ClientPortal({ tripId }) {
 
   const localFallbackImage = "https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=800&q=80";
 
-  // 1. Fetch Trip Data from Supabase
+  // Monitor Network Connectivity Online/Offline
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // 1. Fetch Trip Data with LocalStorage Offline Backup & Real-Time Sync
   useEffect(() => {
     async function fetchTrip() {
-      const { data, error } = await supabase.from('itineraries').select('*').eq('id', tripId).single();
-      if (!error && data) {
-        setItinerary(data);
-        fetchLiveWeather(data.destination);
+      // Check local cache first for instant load
+      const localCachedTrip = localStorage.getItem(`routeflow_trip_${tripId}`);
+      if (localCachedTrip) {
+        try {
+          const parsed = JSON.parse(localCachedTrip);
+          setItinerary(parsed);
+          if (parsed.visited_stops) setVisitedActivities(parsed.visited_stops);
+          if (parsed.expenses) setExpenses(parsed.expenses);
+        } catch (e) { console.error(e); }
+      }
+
+      if (navigator.onLine) {
+        const { data, error } = await supabase.from('itineraries').select('*').eq('id', tripId).single();
+        if (!error && data) {
+          setItinerary(data);
+          localStorage.setItem(`routeflow_trip_${tripId}`, JSON.stringify(data));
+          if (data.visited_stops) setVisitedActivities(data.visited_stops);
+          if (data.expenses) setExpenses(data.expenses);
+          fetchLiveWeather(data.destination);
+        }
       }
       setLoading(false);
     }
     fetchTrip();
+
+    fetch('https://open.er-api.com/v6/latest/INR')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.rates) setForexRates(data.rates);
+      })
+      .catch(() => console.log('Using default forex matrix'));
+
+    const channel = supabase
+      .channel(`realtime:itinerary:${tripId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'itineraries', filter: `id=eq.${tripId}` },
+        (payload) => {
+          if (payload.new) {
+            if (payload.new.visited_stops) setVisitedActivities(payload.new.visited_stops);
+            if (payload.new.expenses) setExpenses(payload.new.expenses);
+            localStorage.setItem(`routeflow_trip_${tripId}`, JSON.stringify(payload.new));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [tripId]);
 
-  // 2. Safely Initialize Map Container
+  // 2. Initialize Map Container
+  // 2. Initialize Map Container with automatic container resize recalculation
   useEffect(() => {
-    if (loading || !itinerary || !mapRef.current || mapInstance.current) return;
+    if (loading || !itinerary || !mapRef.current) return;
+
+    let isMounted = true;
 
     const initMap = async () => {
-      let startLat = 9.9252, startLng = 78.1198, zoomLevel = 12;
+      let startLat = 9.9252, startLng = 78.1198, zoomLevel = 13;
 
-      try {
-        const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(itinerary.destination)}&count=1&format=json`);
-        const data = await res.json();
-        if (data.results && data.results.length > 0) {
-          startLat = data.results[0].latitude;
-          startLng = data.results[0].longitude;
-        }
-      } catch (e) {
-        console.error("Geocoding failed", e);
+      // If active target coordinates exist, prioritize centering on them
+      if (activeTarget && activeTarget.lat && activeTarget.lng) {
+        startLat = activeTarget.lat;
+        startLng = activeTarget.lng;
+      } else if (itinerary.trip_data?.[0]?.activities?.[0]?.lat) {
+        startLat = itinerary.trip_data[0].activities[0].lat;
+        startLng = itinerary.trip_data[0].activities[0].lng;
       }
 
       if (!mapInstance.current && mapRef.current) {
-        mapInstance.current = L.map(mapRef.current, { zoomControl: false }).setView([startLat, startLng], zoomLevel);
+        const map = L.map(mapRef.current, { 
+          zoomControl: false,
+          attributionControl: false 
+        }).setView([startLat, startLng], zoomLevel);
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-          attribution: '© OpenStreetMap'
-        }).addTo(mapInstance.current);
+        // Standard, fast OpenStreetMap tile provider
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          subdomains: ['a', 'b', 'c']
+        }).addTo(map);
+
+        mapInstance.current = map;
+
+        // Force Leaflet to re-calculate container dimensions after rendering
+        setTimeout(() => {
+          if (mapInstance.current) {
+            mapInstance.current.invalidateSize();
+          }
+        }, 300);
 
         setTimeout(() => {
-          if (mapInstance.current) mapInstance.current.invalidateSize();
-        }, 200);
+          if (mapInstance.current) {
+            mapInstance.current.invalidateSize();
+          }
+        }, 800);
       }
     };
 
     initMap();
-  }, [loading, itinerary]);
 
-  // 3. Scan Across ALL Days for the First Unvisited Stop
+    return () => {
+      isMounted = false;
+    };
+  }, [loading, itinerary, activeTarget]);
+  // 3. Next Target Evaluation
   useEffect(() => {
     if (!itinerary) return;
 
@@ -86,7 +181,7 @@ export default function ClientPortal({ tripId }) {
     setActiveTarget(nextTarget);
   }, [itinerary, visitedActivities]);
 
-  // 4. Watch Live User GPS Coordinates
+  // 4. Live GPS Tracking
   useEffect(() => {
     if (!navigator.geolocation) return;
 
@@ -117,7 +212,7 @@ export default function ClientPortal({ tripId }) {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // 5. Render Target Pin & Dynamic Popup Title + Draw Route Lines Across Days
+  // 5. Dynamic Map Route Lines
   useEffect(() => {
     if (!mapInstance.current || !activeTarget) return;
 
@@ -129,7 +224,6 @@ export default function ClientPortal({ tripId }) {
         .setPopupContent(`<b>Target:</b> ${activeTarget.title}`)
         .openPopup();
     } else {
-      // Create and add destination pin marker to map
       const flagIcon = L.divIcon({
         className: 'custom-map-pin',
         html: `
@@ -163,7 +257,9 @@ export default function ClientPortal({ tripId }) {
     }
 
     if (userCoords) {
-      if (!itinerary?.is_driving_route) {
+      const isDriving = activeTarget.is_driving_route ?? true;
+
+      if (!isDriving) {
         activeRouteLayerRef.current = L.polyline([userCoords, targetCoords], {
           color: '#2563eb',
           weight: 4,
@@ -206,7 +302,7 @@ export default function ClientPortal({ tripId }) {
     }
   }, [activeTarget, userCoords, itinerary]);
 
-  // Voice Assistant Handler
+  // Voice Assistant Handler with Local Cache Priority
   const triggerVoiceGuide = async (text) => {
     if (speaking) {
       if (audioPlayer) audioPlayer.pause();
@@ -216,71 +312,187 @@ export default function ClientPortal({ tripId }) {
     }
 
     if (!text) return;
-
     setSpeaking(true);
 
     const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; 
     const ELEVENLABS_API_KEY = 'sk_2bf8e5aacecd132be94f7fdc84c7e8c60f2e1c9461598e1d';
 
-    try {
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: text,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-          },
-        }),
-      });
+    // 1. Check local audio blob cache
+    const cacheKey = `routeflow_voice_${btoa(unescape(encodeURIComponent(text.slice(0, 32))))}`;
+    const localAudioData = localStorage.getItem(cacheKey);
 
-      if (!response.ok) {
-        throw new Error(`API response error: ${response.status}`);
-      }
-
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-
+    if (localAudioData) {
+      const audio = new Audio(localAudioData);
       setAudioPlayer(audio);
       audio.play();
-
       audio.onended = () => setSpeaking(false);
       audio.onerror = () => setSpeaking(false);
+      return;
+    }
 
-    } catch (err) {
-      console.warn("ElevenLabs request failed. Falling back to native browser voice engine...", err);
+    // 2. Fetch from ElevenLabs if online
+    if (navigator.onLine) {
+      try {
+        const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'xi-api-key': ELEVENLABS_API_KEY,
+          },
+          body: JSON.stringify({
+            text: text,
+            model_id: 'eleven_multilingual_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }),
+        });
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      const voices = window.speechSynthesis.getVoices();
+        if (response.ok) {
+          const audioBlob = await response.blob();
+          const reader = new FileReader();
+          reader.readAsDataURL(audioBlob);
+          reader.onloadend = () => {
+            try {
+              localStorage.setItem(cacheKey, reader.result);
+            } catch (e) {
+              console.log('LocalStorage audio quota reached');
+            }
+          };
 
-      const bestVoice = voices.find(v => 
-        (v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('Natural')) && 
-        v.lang.startsWith('en')
-      ) || voices.find(v => v.lang.startsWith('en'));
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          setAudioPlayer(audio);
+          audio.play();
+          audio.onended = () => setSpeaking(false);
+          audio.onerror = () => setSpeaking(false);
+          return;
+        }
+      } catch (err) {
+        console.warn("Falling back to native browser speech synthesis...", err);
+      }
+    }
 
-      if (bestVoice) utterance.voice = bestVoice;
-      utterance.rate = 0.92;
-      utterance.pitch = 1.05;
+    // 3. Fallback to native Web Speech API
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voices = window.speechSynthesis.getVoices();
+    const bestVoice = voices.find(v => 
+      (v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('Natural')) && 
+      v.lang.startsWith('en')
+    ) || voices.find(v => v.lang.startsWith('en'));
 
-      utterance.onend = () => setSpeaking(false);
-      utterance.onerror = () => setSpeaking(false);
+    if (bestVoice) utterance.voice = bestVoice;
+    utterance.rate = 0.92;
+    utterance.pitch = 1.05;
 
-      window.speechSynthesis.speak(utterance);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Pre-Cache Entire Trip for Offline Zero-Network Use
+  const preloadTripOffline = async () => {
+    if (!itinerary) return;
+    setCacheStatus({ isCaching: true, progress: 10, completed: false });
+
+    try {
+      localStorage.setItem(`routeflow_trip_${tripId}`, JSON.stringify(itinerary));
+      setCacheStatus({ isCaching: true, progress: 40, completed: false });
+
+      // Pre-warm map bounds
+      if (mapInstance.current && itinerary.trip_data) {
+        const coords = [];
+        itinerary.trip_data.forEach(d => {
+          d.activities?.forEach(a => {
+            if (a.lat && a.lng) coords.push([a.lat, a.lng]);
+          });
+        });
+        if (coords.length > 0) {
+          const bounds = L.latLngBounds(coords);
+          mapInstance.current.fitBounds(bounds.pad(0.2));
+        }
+      }
+
+      setCacheStatus({ isCaching: true, progress: 80, completed: false });
+
+      setTimeout(() => {
+        setCacheStatus({ isCaching: false, progress: 100, completed: true });
+      }, 1000);
+
+    } catch (e) {
+      console.error(e);
+      setCacheStatus({ isCaching: false, progress: 0, completed: false });
+      alert("Error caching offline trip data.");
     }
   };
 
-  const handleVisitOver = (key) => {
+  const handleVisitOver = async (key) => {
+    if (!isTripLead) return;
+
     if (audioPlayer) audioPlayer.pause();
     window.speechSynthesis.cancel();
     setSpeaking(false);
-    setVisitedActivities((prev) => ({ ...prev, [key]: true }));
+
+    const updatedVisited = { ...visitedActivities, [key]: new Date().toISOString() };
+    setVisitedActivities(updatedVisited);
+
+    if (navigator.onLine) {
+      await supabase.from('itineraries').update({ visited_stops: updatedVisited }).eq('id', tripId);
+    } else {
+      const cached = JSON.parse(localStorage.getItem(`routeflow_trip_${tripId}`) || '{}');
+      cached.visited_stops = updatedVisited;
+      localStorage.setItem(`routeflow_trip_${tripId}`, JSON.stringify(cached));
+    }
   };
+
+  // Group Expense Handlers
+  const handleAddExpense = async (e) => {
+    e.preventDefault();
+    if (!isTripLead || !expenseTitle || !expenseAmount) return;
+
+    const rateToInr = forexRates[expenseCurrency] ? (1 / forexRates[expenseCurrency]) : 1;
+    const amountInInr = parseFloat(expenseAmount) * rateToInr;
+
+    const newExpenseItem = {
+      id: Date.now().toString(),
+      title: expenseTitle,
+      amount: parseFloat(expenseAmount),
+      currency: expenseCurrency,
+      amountInInr: Math.round(amountInInr),
+      loggedBy: itinerary.client_name,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    const updatedExpenses = [newExpenseItem, ...expenses];
+    setExpenses(updatedExpenses);
+    setExpenseTitle('');
+    setExpenseAmount('');
+
+    if (navigator.onLine) {
+      await supabase.from('itineraries').update({ expenses: updatedExpenses }).eq('id', tripId);
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId) => {
+    if (!isTripLead) return;
+    const updatedExpenses = expenses.filter(item => item.id !== expenseId);
+    setExpenses(updatedExpenses);
+    if (navigator.onLine) {
+      await supabase.from('itineraries').update({ expenses: updatedExpenses }).eq('id', tripId);
+    }
+  };
+
+  const totalMembersCount = 1 + (itinerary?.group_members?.length || 0);
+  const totalInrSpent = expenses.reduce((acc, curr) => acc + (curr.amountInInr || curr.amount || 0), 0);
+  const perPersonInrShare = Math.round(totalInrSpent / totalMembersCount);
+
+  const allVaultTickets = [];
+  itinerary?.trip_data?.forEach((day) => {
+    day.activities?.forEach((act) => {
+      if (act.ticketName || act.ticketUrl) {
+        allVaultTickets.push({ ...act, dayTitle: day.dayTitle });
+      }
+    });
+  });
 
   async function fetchLiveWeather(locationName) {
     try {
@@ -319,6 +531,15 @@ export default function ClientPortal({ tripId }) {
     return () => clearInterval(interval);
   }, [itinerary]);
 
+  const handleSosTrigger = () => {
+    const coordsText = userCoords ? `${userCoords[0].toFixed(5)}, ${userCoords[1].toFixed(5)}` : "Acquiring GPS...";
+    const mapsLink = userCoords ? `https://maps.google.com/?q=${userCoords[0]},${userCoords[1]}` : "Location pending";
+    const emergencyMessage = encodeURIComponent(
+      `🚨 EMERGENCY SOS ALERT!\n\nTraveler: ${itinerary.client_name} (${isTripLead ? 'Trip Lead' : 'Companion'})\nDestination: ${itinerary.destination}\nTrip ID: ${itinerary.id}\nLive GPS: ${coordsText}\nGoogle Maps: ${mapsLink}\n\nImmediate assistance requested!`
+    );
+    window.open(`https://wa.me/918008625370?text=${emergencyMessage}`, '_blank');
+  };
+
   if (loading) return <div className="h-screen flex items-center justify-center bg-[#FAFAFA] text-slate-800">Loading Portal...</div>;
   if (!itinerary) return <div className="h-screen flex items-center justify-center bg-[#FAFAFA]">Itinerary Offline.</div>;
 
@@ -330,6 +551,37 @@ export default function ClientPortal({ tripId }) {
         <img src={itinerary.cover_image || localFallbackImage} alt={itinerary.destination} className="w-full h-full object-cover opacity-80" />
         <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent" />
         
+        {/* Top Controls: 3-Dashes Menu, Network Status & SOS */}
+        <div className="absolute top-4 inset-x-4 flex justify-between items-center z-20">
+          <button 
+            onClick={() => setShowSideDrawer(true)}
+            className="w-10 h-10 rounded-full bg-slate-900/80 hover:bg-slate-900 text-white flex flex-col items-center justify-center gap-1 backdrop-blur-md border border-white/20 shadow-lg active:scale-95 transition-all"
+            title="Open Trip Menu"
+          >
+            <span className="w-4 h-0.5 bg-white rounded-full"></span>
+            <span className="w-4 h-0.5 bg-white rounded-full"></span>
+            <span className="w-4 h-0.5 bg-white rounded-full"></span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full font-mono backdrop-blur-md border ${isOnline ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30' : 'bg-rose-500/30 text-rose-200 border-rose-400/40 animate-pulse'}`}>
+              {isOnline ? '🟢 Live' : '📡 Offline'}
+            </span>
+
+            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full font-mono backdrop-blur-md border ${isTripLead ? 'bg-amber-500/20 text-amber-300 border-amber-400/30' : 'bg-blue-500/20 text-blue-300 border-blue-400/30'}`}>
+              {isTripLead ? '👑 Lead' : '👥 Member'}
+            </span>
+            
+            <button 
+              onClick={() => setShowSosModal(true)}
+              className="flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-full text-xs font-bold font-mono shadow-lg backdrop-blur-md border border-rose-400/40 active:scale-95 transition-transform animate-pulse"
+            >
+              <span>🚨</span>
+              <span>SOS</span>
+            </button>
+          </div>
+        </div>
+
         {/* Countdown Card */}
         <div className="absolute bottom-4 left-6 right-6 bg-white/10 backdrop-blur-xl border border-white/20 px-5 py-3.5 rounded-2xl text-center shadow-xl">
           <p className="text-[9px] font-bold text-amber-300 tracking-widest font-mono uppercase mb-1">Adventure Commences In</p>
@@ -349,7 +601,7 @@ export default function ClientPortal({ tripId }) {
         </div>
       </div>
 
-      {/* 2. Smooth Scrollable Container */}
+      {/* 2. Main Scrollable Container */}
       <div className="flex-1 overflow-y-auto scroll-smooth px-5 pt-5 pb-24 space-y-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         
         {/* Title Block */}
@@ -363,7 +615,9 @@ export default function ClientPortal({ tripId }) {
         <div className="p-3 bg-white rounded-2xl shadow-sm border border-slate-200/70 space-y-2">
           <div className="flex justify-between items-center px-1">
             <div className="flex flex-col">
-              <span className="text-[9px] font-bold tracking-wider text-slate-400 uppercase font-mono">Live Navigation Path</span>
+              <span className="text-[9px] font-bold tracking-wider text-slate-400 uppercase font-mono">
+                {activeTarget?.is_driving_route ?? true ? '🚗 Road Navigation Path' : '✈️ Flight Navigation Path'}
+              </span>
               {activeTarget ? (
                 <span className="text-[11px] text-blue-600 font-semibold font-mono truncate max-w-[200px]">📍 {activeTarget.title}</span>
               ) : (
@@ -378,7 +632,7 @@ export default function ClientPortal({ tripId }) {
           </div>
         </div>
 
-        {/* MULTI-DAY LOOP */}
+        {/* MULTI-DAY STOP CARDS */}
         {itinerary.trip_data?.map((day, dayIndex) => (
           <div key={dayIndex} className="pt-2">
             <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider sticky top-0 bg-[#FAFAFA]/90 backdrop-blur-md py-2 z-10 font-mono border-b border-slate-200/60 mb-3">
@@ -389,7 +643,7 @@ export default function ClientPortal({ tripId }) {
               {day.activities?.map((act, actIndex) => {
                 const key = `${dayIndex}-${actIndex}`;
                 const isCurrentActiveTarget = activeTarget?.key === key;
-                const isVisited = visitedActivities[key];
+                const isVisited = !!visitedActivities[key];
 
                 return (
                   <div key={actIndex} className={`transition-all duration-300 ${isVisited ? 'opacity-40' : 'opacity-100'}`}>
@@ -401,30 +655,54 @@ export default function ClientPortal({ tripId }) {
                       )}
 
                       <div className="flex justify-between items-center mb-1">
-                        <span className="text-xs font-bold text-amber-700 font-mono">{act.time}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-amber-700 font-mono">{act.time}</span>
+                          <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono">
+                            {act.is_driving_route ?? true ? '🚗 Road' : '✈️ Flight'}
+                          </span>
+                        </div>
                         
-                        <button 
-                          onClick={() => triggerVoiceGuide(act.description)}
-                          className="text-xs px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 font-mono transition-colors"
-                        >
-                          {speaking && isCurrentActiveTarget ? "⏸️ Pause" : "🔊 Voice Guide"}
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          {(act.ticketUrl || act.ticketName) && (
+                            <button
+                              onClick={() => setActiveTicketModal(act)}
+                              className="text-[11px] px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 rounded-lg font-mono font-semibold transition-colors"
+                            >
+                              🎟️ Pass
+                            </button>
+                          )}
+
+                          <button 
+                            onClick={() => triggerVoiceGuide(act.description)}
+                            className="text-xs px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 font-mono transition-colors"
+                          >
+                            {speaking && isCurrentActiveTarget ? "⏸️ Pause" : "🔊 Voice"}
+                          </button>
+                        </div>
                       </div>
 
                       <h3 className="font-semibold text-slate-900 text-sm mb-1">{act.title}</h3>
                       <p className="text-xs text-slate-500 leading-relaxed mb-3">{act.description}</p>
 
-                      {isCurrentActiveTarget && !isVisited && (
+                      {/* Lead Action: 'Visit Over' */}
+                      {isCurrentActiveTarget && !isVisited && isTripLead && (
                         <button
                           onClick={() => handleVisitOver(key)}
                           className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold uppercase rounded-xl font-mono transition-all active:scale-95 shadow-sm"
                         >
-                          ✓ Visit Over (Show Next Location)
+                          ✓ Visit Over (Advance Group Route)
                         </button>
+                      )}
+
+                      {/* Companion View */}
+                      {isCurrentActiveTarget && !isVisited && !isTripLead && (
+                        <div className="w-full py-2 bg-blue-50 text-blue-700 text-[11px] font-mono rounded-xl text-center border border-blue-100">
+                          📍 Active Stop • Awaiting Trip Lead Check-out
+                        </div>
                       )}
                       
                       {isVisited && (
-                        <span className="text-[10px] text-emerald-600 font-bold font-mono block">✓ Checked Out / Completed</span>
+                        <span className="text-[10px] text-emerald-600 font-bold font-mono block">✓ Visited / Completed</span>
                       )}
                     </div>
                   </div>
@@ -441,6 +719,360 @@ export default function ClientPortal({ tripId }) {
           💬 Connect With Travel Planner
         </a>
       </div>
+
+      {/* 4. SLIDE-OUT SIDE DRAWER (3-DASHES MENU) */}
+      {showSideDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          <div 
+            onClick={() => setShowSideDrawer(false)}
+            className="flex-1 bg-black/60 backdrop-blur-sm transition-opacity"
+          />
+
+          <div className="w-[85%] max-w-sm bg-white h-full shadow-2xl flex flex-col z-10 animate-slideLeft">
+            
+            {/* Drawer Header */}
+            <div className="p-5 bg-slate-900 text-white flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-sm">Trip Tools & Utilities</h3>
+                <p className="text-[10px] text-slate-400 font-mono">{itinerary.destination} • {itinerary.client_name}</p>
+              </div>
+              <button 
+                onClick={() => setShowSideDrawer(false)}
+                className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-slate-300 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Tab Navigation */}
+            <div className="flex border-b border-slate-200 bg-slate-50 text-[11px] font-mono">
+              <button 
+                onClick={() => setActiveDrawerTab('expenses')}
+                className={`flex-1 py-3 text-center font-bold border-b-2 transition-colors ${activeDrawerTab === 'expenses' ? 'border-amber-600 text-amber-700 bg-white' : 'border-transparent text-slate-500'}`}
+              >
+                💰 Split
+              </button>
+              <button 
+                onClick={() => setActiveDrawerTab('vault')}
+                className={`flex-1 py-3 text-center font-bold border-b-2 transition-colors ${activeDrawerTab === 'vault' ? 'border-amber-600 text-amber-700 bg-white' : 'border-transparent text-slate-500'}`}
+              >
+                🎟️ Passes
+              </button>
+              <button 
+                onClick={() => setActiveDrawerTab('roster')}
+                className={`flex-1 py-3 text-center font-bold border-b-2 transition-colors ${activeDrawerTab === 'roster' ? 'border-amber-600 text-amber-700 bg-white' : 'border-transparent text-slate-500'}`}
+              >
+                👥 Group
+              </button>
+              <button 
+                onClick={() => setActiveDrawerTab('offline')}
+                className={`flex-1 py-3 text-center font-bold border-b-2 transition-colors ${activeDrawerTab === 'offline' ? 'border-amber-600 text-amber-700 bg-white' : 'border-transparent text-slate-500'}`}
+              >
+                ⚡ Offline
+              </button>
+            </div>
+
+            {/* Drawer Body Content */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              
+              {/* TAB 1: EXPENSE SPLITTER */}
+              {activeDrawerTab === 'expenses' && (
+                <div className="space-y-4">
+                  <div className="bg-gradient-to-br from-slate-900 to-slate-800 p-4 rounded-2xl text-white space-y-2 shadow-sm">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-amber-300">Total Group Spending</span>
+                      <span className="text-[10px] font-mono text-slate-400">{totalMembersCount} Travelers</span>
+                    </div>
+                    <div className="text-2xl font-bold font-mono">₹{totalInrSpent.toLocaleString('en-IN')}</div>
+                    <div className="pt-2 border-t border-white/10 flex justify-between text-xs font-mono text-slate-300">
+                      <span>Each Person Share:</span>
+                      <span className="font-bold text-emerald-400">₹{perPersonInrShare.toLocaleString('en-IN')}</span>
+                    </div>
+                  </div>
+
+                  {isTripLead ? (
+                    <form onSubmit={handleAddExpense} className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
+                      <span className="text-[11px] font-bold text-slate-700 font-mono block">➕ Log New Shared Expense</span>
+                      <input 
+                        type="text" 
+                        placeholder="Expense Item (e.g. Seafood Dinner)" 
+                        value={expenseTitle} 
+                        onChange={(e) => setExpenseTitle(e.target.value)}
+                        className="w-full p-2 border rounded-xl text-xs bg-white focus:outline-slate-900"
+                        required
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input 
+                          type="number" 
+                          placeholder="Amount" 
+                          value={expenseAmount} 
+                          onChange={(e) => setExpenseAmount(e.target.value)}
+                          className="p-2 border rounded-xl text-xs bg-white focus:outline-slate-900 font-mono"
+                          required
+                        />
+                        <select 
+                          value={expenseCurrency} 
+                          onChange={(e) => setExpenseCurrency(e.target.value)}
+                          className="p-2 border rounded-xl text-xs bg-white font-mono cursor-pointer"
+                        >
+                          <option value="INR">INR (₹)</option>
+                          <option value="USD">USD ($)</option>
+                          <option value="EUR">EUR (€)</option>
+                          <option value="THB">THB (฿)</option>
+                          <option value="AED">AED (د.إ)</option>
+                          <option value="JPY">JPY (¥)</option>
+                          <option value="SGD">SGD (S$)</option>
+                        </select>
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs font-mono uppercase tracking-wider transition-colors shadow-sm"
+                      >
+                        + Add To Group Ledger
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="p-3 bg-blue-50 text-blue-700 text-[11px] font-mono rounded-xl text-center border border-blue-100">
+                      👥 Live Companion Ledger View (Managed by Trip Lead)
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">Shared Ledger ({expenses.length})</span>
+                    {expenses.length === 0 ? (
+                      <p className="text-xs text-slate-400 italic py-4 text-center">No expenses logged yet.</p>
+                    ) : (
+                      expenses.map((item) => (
+                        <div key={item.id} className="p-3 bg-white border border-slate-200/80 rounded-xl flex justify-between items-center shadow-xs">
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-800">{item.title}</h4>
+                            <p className="text-[10px] text-slate-400 font-mono">
+                              {item.currency} {item.amount} • {item.timestamp}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold font-mono text-slate-900">₹{item.amountInInr?.toLocaleString('en-IN')}</span>
+                            {isTripLead && (
+                              <button 
+                                onClick={() => handleDeleteExpense(item.id)}
+                                className="text-slate-300 hover:text-rose-600 text-xs pl-1"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: DIGITAL TICKET VAULT */}
+              {activeDrawerTab === 'vault' && (
+                <div className="space-y-3">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">Attached Passes ({allVaultTickets.length})</span>
+                  {allVaultTickets.length === 0 ? (
+                    <p className="text-xs text-slate-400 italic py-6 text-center">No entry tickets uploaded for this trip.</p>
+                  ) : (
+                    allVaultTickets.map((t, idx) => (
+                      <div key={idx} className="p-3.5 bg-amber-50/60 border border-amber-200/80 rounded-2xl space-y-2">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="text-[9px] font-mono uppercase tracking-wider text-amber-800 font-bold bg-amber-100 px-2 py-0.5 rounded-full">
+                              {t.dayTitle.split(':')[0]}
+                            </span>
+                            <h4 className="text-xs font-bold text-slate-900 mt-1">{t.title}</h4>
+                            <p className="text-[11px] font-mono text-slate-600">{t.ticketName || "General Pass"}</p>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setShowSideDrawer(false);
+                              setActiveTicketModal(t);
+                            }}
+                            className="text-xs bg-slate-900 hover:bg-slate-800 text-white font-mono px-3 py-1.5 rounded-lg shadow-sm"
+                          >
+                            View Pass
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: GROUP ROSTER */}
+              {activeDrawerTab === 'roster' && (
+                <div className="space-y-3">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">Travel Group Members ({totalMembersCount})</span>
+                  
+                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl flex justify-between items-center">
+                    <div>
+                      <span className="text-[9px] font-mono font-bold text-amber-800 uppercase bg-amber-200/60 px-2 py-0.5 rounded-md">👑 Trip Leader</span>
+                      <h4 className="text-xs font-bold text-slate-900 mt-1">{itinerary.client_name}</h4>
+                      <p className="text-[10px] font-mono text-slate-500">{itinerary.whatsapp_number || "Primary Contact"}</p>
+                    </div>
+                  </div>
+
+                  {itinerary.group_members?.map((m, idx) => (
+                    <div key={idx} className="p-3 bg-white border border-slate-200 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="text-[9px] font-mono font-bold text-blue-700 uppercase bg-blue-50 px-2 py-0.5 rounded-md">👥 Companion</span>
+                        <h4 className="text-xs font-bold text-slate-900 mt-1">{m.name}</h4>
+                        <p className="text-[10px] font-mono text-slate-500">{m.phone || "No phone listed"}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* TAB 4: OFFLINE-FIRST ENGINE */}
+              {activeDrawerTab === 'offline' && (
+                <div className="space-y-4">
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                    <span className="text-xs font-bold text-slate-800 font-mono block">⚡ Offline Pre-Cache Engine</span>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Download map bounds, voice guide assets, and passes to your device while connected to Wi-Fi.
+                    </p>
+
+                    <button
+                      onClick={preloadTripOffline}
+                      disabled={cacheStatus.isCaching}
+                      className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs font-mono uppercase tracking-wider transition-colors shadow-sm mt-2"
+                    >
+                      {cacheStatus.isCaching ? `Caching Assets (${cacheStatus.progress}%)...` : cacheStatus.completed ? '✅ Trip Successfully Cached' : '⚡ Cache Trip For Offline Use'}
+                    </button>
+                  </div>
+
+                  <div className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-[11px] font-mono border border-emerald-200">
+                    💡 If network coverage drops in remote areas or temples, RouteFlow switches into offline mode automatically.
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* Drawer Footer Actions */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 space-y-2">
+              <button 
+                onClick={() => {
+                  setShowSideDrawer(false);
+                  setShowSosModal(true);
+                }}
+                className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs uppercase font-mono tracking-wider flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <span>🚨</span> Trigger Emergency SOS
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 5. Digital Vault Modal (Passes & QR) */}
+      {activeTicketModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-xs bg-white rounded-3xl p-6 shadow-2xl border border-amber-100 space-y-4 text-center relative">
+            <button 
+              onClick={() => setActiveTicketModal(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 text-sm font-bold"
+            >
+              ✕
+            </button>
+
+            <div className="w-12 h-12 bg-amber-100 text-amber-800 rounded-full flex items-center justify-center mx-auto text-xl">
+              🎟️
+            </div>
+
+            <div>
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                Verified Entry Pass
+              </span>
+              <h3 className="text-base font-bold text-slate-900 mt-2">{activeTicketModal.title}</h3>
+              <p className="text-xs font-mono text-slate-500 mt-0.5">{activeTicketModal.ticketName || "General Admission Pass"}</p>
+            </div>
+
+            {activeTicketModal.ticketUrl ? (
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 flex flex-col items-center">
+                <img 
+                  src={activeTicketModal.ticketUrl} 
+                  alt="Pass Document" 
+                  className="w-44 h-44 object-contain rounded-xl shadow-inner bg-white p-2"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+                <a 
+                  href={activeTicketModal.ticketUrl} 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="text-[11px] font-mono text-blue-600 hover:underline mt-2.5 font-bold block"
+                >
+                  🔗 Open High-Res Document
+                </a>
+              </div>
+            ) : (
+              <div className="p-4 bg-slate-50 rounded-2xl text-xs font-mono text-slate-600 border border-slate-100">
+                Present this digital reference to venue staff at entry.
+              </div>
+            )}
+
+            <button
+              onClick={() => setActiveTicketModal(null)}
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider font-mono shadow-md"
+            >
+              Close Pass
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 6. SOS Emergency Modal */}
+      {showSosModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-rose-100 space-y-4 text-center">
+            
+            <div className="w-14 h-14 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto text-2xl animate-bounce">
+              🚨
+            </div>
+
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Emergency SOS Assist</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Share your live coordinates immediately with your travel concierge or call emergency services.
+              </p>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-[11px] font-mono text-slate-600">
+              <span className="font-bold text-slate-700 block mb-0.5">Your Current GPS:</span>
+              {userCoords ? `${userCoords[0].toFixed(5)}, ${userCoords[1].toFixed(5)}` : "Acquiring live GPS..."}
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                onClick={handleSosTrigger}
+                className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider font-mono shadow-lg shadow-rose-600/30 active:scale-95 transition-transform flex items-center justify-center gap-2"
+              >
+                <span>💬</span> Dispatch SOS via WhatsApp
+              </button>
+
+              <a
+                href="tel:112"
+                className="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider font-mono shadow-md block active:scale-95 transition-transform"
+              >
+                📞 Call Local Emergency (112)
+              </a>
+
+              <button
+                onClick={() => setShowSosModal(false)}
+                className="w-full py-2.5 text-xs text-slate-500 hover:text-slate-700 font-medium font-mono"
+              >
+                Dismiss
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
